@@ -89,43 +89,45 @@ def preprocess_image(image_path: Path):
 
 
 def make_gradcam_overlay(
-    model_obj: Any,
+    input_batch: Any,
     image_path: Path,
     output_path: Path,
     pred_idx: int,
-) -> None:
-    input_batch = preprocess_image(image_path)
+) -> bool:
 
     # Use cached models instead of rebuilding
     if conv_model_cached is None or classifier_model_cached is None:
-        return
+        return False
 
-    with tf.GradientTape() as tape:
-        conv_outputs = conv_model_cached(input_batch)
-        tape.watch(conv_outputs)
-        predictions = classifier_model_cached(conv_outputs)
-        loss_value = predictions[:, pred_idx]
+    try:
+        with tf.GradientTape() as tape:
+            conv_outputs = conv_model_cached(input_batch)
+            tape.watch(conv_outputs)
+            predictions = classifier_model_cached(conv_outputs)
+            loss_value = predictions[:, pred_idx]
 
-    grads = tape.gradient(loss_value, conv_outputs)
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+        grads = tape.gradient(loss_value, conv_outputs)
+        pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
 
-    conv_outputs = conv_outputs[0]
-    heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
-    heatmap = tf.squeeze(heatmap)
+        conv_outputs = conv_outputs[0]
+        heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
+        heatmap = tf.squeeze(heatmap)
 
-    heatmap = tf.maximum(heatmap, 0)
-    heatmap /= tf.reduce_max(heatmap) + tf.keras.backend.epsilon()
-    heatmap_np = heatmap.numpy()
+        heatmap = tf.maximum(heatmap, 0)
+        heatmap /= tf.reduce_max(heatmap) + tf.keras.backend.epsilon()
+        heatmap_np = heatmap.numpy()
 
-    original_bgr = cv2.imread(str(image_path))
-    original_bgr = cv2.resize(original_bgr, (IMG_SIZE, IMG_SIZE))
+        original_bgr = cv2.imread(str(image_path))
+        original_bgr = cv2.resize(original_bgr, (IMG_SIZE, IMG_SIZE))
 
-    heatmap_uint8 = np.uint8(255 * cv2.resize(heatmap_np, (IMG_SIZE, IMG_SIZE)))
-    colored_heatmap = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
-    overlay = cv2.addWeighted(original_bgr, 0.6, colored_heatmap, 0.4, 0)
+        heatmap_uint8 = np.uint8(255 * cv2.resize(heatmap_np, (IMG_SIZE, IMG_SIZE)))
+        colored_heatmap = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
+        overlay = cv2.addWeighted(original_bgr, 0.6, colored_heatmap, 0.4, 0)
 
-    cv2.imwrite(str(output_path), overlay)
-    return
+        return bool(cv2.imwrite(str(output_path), overlay))
+    except Exception as exc:
+        app.logger.exception("Grad-CAM generation failed: %s", exc)
+        return False
 
 
 def get_probability_table(preds) -> list[dict[str, float | str]]:
@@ -200,8 +202,11 @@ def predict():
     pred_label = class_labels[pred_idx] if class_labels else str(pred_idx)
     pred_conf = float(preds[0][pred_idx])
 
-    make_gradcam_overlay(model, upload_path, overlay_path, pred_idx)
+    gradcam_ready = make_gradcam_overlay(input_batch, upload_path, overlay_path, pred_idx)
     table = get_probability_table(preds)
+
+    gradcam_image = f"/results/{overlay_path.name}" if gradcam_ready else f"/uploads/{unique_name}"
+    gradcam_note = None if gradcam_ready else "Grad-CAM unavailable for this request; showing original image."
 
     return render_template(
         "result.html",
@@ -209,7 +214,8 @@ def predict():
         confidence=pred_conf,
         probabilities=table,
         uploaded_image=f"/uploads/{unique_name}",
-        gradcam_image=f"/results/{overlay_path.name}",
+        gradcam_image=gradcam_image,
+        gradcam_note=gradcam_note,
     )
 
 

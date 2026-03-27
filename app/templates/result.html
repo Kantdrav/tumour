@@ -22,6 +22,9 @@
       </article>
       <article class="card">
         <h2>Grad-CAM Highlight</h2>
+        {% if gradcam_note %}
+        <p>{{ gradcam_note }}</p>
+        {% endif %}
         <img src="{{ gradcam_image }}" alt="Grad-CAM result" class="preview" />
       </article>
     </section>
