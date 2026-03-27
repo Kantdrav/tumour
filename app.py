@@ -50,8 +50,22 @@ app = Flask(__name__, template_folder="app/templates", static_folder="app/static
 
 if tf is not None and MODEL_PATH.exists():
     model = tf.keras.models.load_model(MODEL_PATH)
+    # Pre-build Grad-CAM models at startup for faster inference
+    try:
+        backbone = model.get_layer("efficientnetb0")
+        conv_model_cached = tf.keras.models.Model(backbone.input, backbone.output)
+        classifier_input = tf.keras.Input(shape=backbone.output.shape[1:])
+        x = classifier_input
+        for layer in model.layers[2:]:
+            x = layer(x)
+        classifier_model_cached = tf.keras.models.Model(classifier_input, x)
+    except Exception:
+        conv_model_cached = None
+        classifier_model_cached = None
 else:
     model = None
+    conv_model_cached = None
+    classifier_model_cached = None
 
 
 if CLASS_MAP_PATH.exists():
@@ -74,19 +88,6 @@ def preprocess_image(image_path: Path):
     return np.expand_dims(image_array, axis=0)
 
 
-def build_gradcam_models(model_obj: Any):
-    backbone = model_obj.get_layer("efficientnetb0")
-    conv_model = tf.keras.models.Model(backbone.input, backbone.output)
-
-    classifier_input = tf.keras.Input(shape=backbone.output.shape[1:])
-    x = classifier_input
-    for layer in model_obj.layers[2:]:
-        x = layer(x)
-    classifier_model = tf.keras.models.Model(classifier_input, x)
-
-    return conv_model, classifier_model
-
-
 def make_gradcam_overlay(model_obj: Any, image_path: Path, output_path: Path) -> tuple[str, float]:
     input_batch = preprocess_image(image_path)
 
@@ -96,12 +97,14 @@ def make_gradcam_overlay(model_obj: Any, image_path: Path, output_path: Path) ->
 
     class_name = class_labels[pred_idx] if class_labels else str(pred_idx)
 
-    conv_model, classifier_model = build_gradcam_models(model_obj)
+    # Use cached models instead of rebuilding
+    if conv_model_cached is None or classifier_model_cached is None:
+        return class_name, confidence
 
     with tf.GradientTape() as tape:
-        conv_outputs = conv_model(input_batch)
+        conv_outputs = conv_model_cached(input_batch)
         tape.watch(conv_outputs)
-        predictions = classifier_model(conv_outputs)
+        predictions = classifier_model_cached(conv_outputs)
         loss_value = predictions[:, pred_idx]
 
     grads = tape.gradient(loss_value, conv_outputs)
