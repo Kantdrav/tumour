@@ -88,18 +88,17 @@ def preprocess_image(image_path: Path):
     return np.expand_dims(image_array, axis=0)
 
 
-def make_gradcam_overlay(model_obj: Any, image_path: Path, output_path: Path) -> tuple[str, float]:
+def make_gradcam_overlay(
+    model_obj: Any,
+    image_path: Path,
+    output_path: Path,
+    pred_idx: int,
+) -> None:
     input_batch = preprocess_image(image_path)
-
-    preds = model_obj.predict(input_batch, verbose=0)
-    pred_idx = int(np.argmax(preds[0]))
-    confidence = float(preds[0][pred_idx])
-
-    class_name = class_labels[pred_idx] if class_labels else str(pred_idx)
 
     # Use cached models instead of rebuilding
     if conv_model_cached is None or classifier_model_cached is None:
-        return class_name, confidence
+        return
 
     with tf.GradientTape() as tape:
         conv_outputs = conv_model_cached(input_batch)
@@ -126,7 +125,7 @@ def make_gradcam_overlay(model_obj: Any, image_path: Path, output_path: Path) ->
     overlay = cv2.addWeighted(original_bgr, 0.6, colored_heatmap, 0.4, 0)
 
     cv2.imwrite(str(output_path), overlay)
-    return class_name, confidence
+    return
 
 
 def get_probability_table(preds) -> list[dict[str, float | str]]:
@@ -201,7 +200,7 @@ def predict():
     pred_label = class_labels[pred_idx] if class_labels else str(pred_idx)
     pred_conf = float(preds[0][pred_idx])
 
-    make_gradcam_overlay(model, upload_path, overlay_path)
+    make_gradcam_overlay(model, upload_path, overlay_path, pred_idx)
     table = get_probability_table(preds)
 
     return render_template(
