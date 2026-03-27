@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Prediction Result</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+  <main class="container">
+    <section class="card hero">
+      <h1>Prediction Result</h1>
+      <p><strong>Detected Class:</strong> {{ prediction }}</p>
+      <p><strong>Confidence:</strong> {{ '%.2f'|format(confidence * 100) }}%</p>
+      <a class="btn-link" href="/">Analyze another image</a>
+    </section>
+
+    <section class="grid-two">
+      <article class="card">
+        <h2>Uploaded Image</h2>
+        <img src="{{ uploaded_image }}" alt="Uploaded MRI" class="preview" />
+      </article>
+      <article class="card">
+        <h2>Grad-CAM Highlight</h2>
+        <img src="{{ gradcam_image }}" alt="Grad-CAM result" class="preview" />
+      </article>
+    </section>
+
+    <section class="card">
+      <h2>Class Probabilities</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Class</th>
+            <th>Probability</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in probabilities %}
+          <tr>
+            <td>{{ row.label }}</td>
+            <td>{{ '%.2f'|format(row.score * 100) }}%</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Medical Image Anomaly Detector</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+  <main class="container">
+    <section class="card hero">
+      <h1>Medical Image Anomaly Detector</h1>
+      <p>Upload an MRI brain scan to classify tumor type and visualize region of interest with Grad-CAM.</p>
+      {% if model_ready %}
+      <span class="badge success">Model loaded</span>
+      {% else %}
+      <span class="badge warning">Model not loaded</span>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Upload MRI Image</h2>
+      {% if error %}
+      <div class="alert">{{ error }}</div>
+      {% endif %}
+      <form action="/predict" method="post" enctype="multipart/form-data" class="upload-form">
+        <input type="file" name="file" accept=".jpg,.jpeg,.png" required />
+        <button type="submit">Analyze Image</button>
+      </form>
+      <p class="hint">Accepted formats: JPG, JPEG, PNG</p>
+    </section>
+  </main>
+</body>
+</html>
