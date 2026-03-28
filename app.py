@@ -51,6 +51,7 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 IMG_SIZE = 224
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
+IS_RENDER = bool(os.environ.get("RENDER") or os.environ.get("RENDER_EXTERNAL_HOSTNAME"))
 
 app = Flask(__name__, template_folder="app/templates", static_folder="app/static")
 app.logger.setLevel(logging.INFO)
@@ -121,7 +122,15 @@ def load_model_and_cache():
             tflite_interpreter = None
             use_tflite = False
     
-    # Fallback to Keras model
+    if IS_RENDER:
+        model_load_error = (
+            "Optimized TFLite model not found on server. "
+            "Please deploy models/brain_tumor_efficientnetb0_quantized.tflite"
+        )
+        logger.error(model_load_error)
+        return False
+
+    # Fallback to Keras model (local/dev only)
     if not MODEL_PATH.exists():
         model_load_error = f"Model file not found at {MODEL_PATH}"
         logger.error(model_load_error)
@@ -454,6 +463,7 @@ if __name__ == "__main__":
     logger.info("=" * 60)
     logger.info("Starting Brain Tumor Detection Application")
     logger.info(f"Port: {port}, Debug: {debug}")
+    logger.info("Running on Render: %s", IS_RENDER)
     logger.info(
         "Dependencies available - TFLite runtime: %s, OpenCV: %s, NumPy: %s",
         TFLiteInterpreter is not None,
