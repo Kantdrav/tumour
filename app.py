@@ -42,6 +42,7 @@ except Exception:
 PROJECT_DIR = Path(__file__).resolve().parent
 MODEL_PATH = PROJECT_DIR / "models" / "brain_tumor_efficientnetb0.keras"
 TFLITE_MODEL_PATH = PROJECT_DIR / "models" / "brain_tumor_efficientnetb0_quantized.tflite"
+RUNTIME_TFLITE_MODEL_PATH = Path("/tmp") / "brain_tumor_efficientnetb0_quantized.tflite"
 CLASS_MAP_PATH = PROJECT_DIR / "models" / "class_indices.json"
 TESTING_DIR = PROJECT_DIR / "Dataset" / "Testing"
 
@@ -74,6 +75,7 @@ model_load_error = None
 use_tflite = False  # Track if we're using TFLite or Keras
 tf_module = None
 TF_IMPORT_ERROR = ""
+active_tflite_path = TFLITE_MODEL_PATH
 
 
 def get_tf_module():
@@ -93,7 +95,14 @@ def get_tf_module():
 
 def ensure_tflite_model_exists() -> bool:
     """Ensure quantized model exists; auto-download on Render if missing."""
+    global active_tflite_path
+
     if TFLITE_MODEL_PATH.exists():
+        active_tflite_path = TFLITE_MODEL_PATH
+        return True
+
+    if IS_RENDER and RUNTIME_TFLITE_MODEL_PATH.exists() and RUNTIME_TFLITE_MODEL_PATH.stat().st_size > 0:
+        active_tflite_path = RUNTIME_TFLITE_MODEL_PATH
         return True
 
     if not IS_RENDER:
@@ -101,13 +110,14 @@ def ensure_tflite_model_exists() -> bool:
 
     try:
         logger.warning("TFLite model missing. Attempting download from %s", TFLITE_DOWNLOAD_URL)
-        TFLITE_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-        urllib.request.urlretrieve(TFLITE_DOWNLOAD_URL, str(TFLITE_MODEL_PATH))
-        exists_now = TFLITE_MODEL_PATH.exists() and TFLITE_MODEL_PATH.stat().st_size > 0
+        RUNTIME_TFLITE_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(TFLITE_DOWNLOAD_URL, str(RUNTIME_TFLITE_MODEL_PATH))
+        exists_now = RUNTIME_TFLITE_MODEL_PATH.exists() and RUNTIME_TFLITE_MODEL_PATH.stat().st_size > 0
         if exists_now:
-            logger.info("Downloaded TFLite model to %s", TFLITE_MODEL_PATH)
+            active_tflite_path = RUNTIME_TFLITE_MODEL_PATH
+            logger.info("Downloaded TFLite model to %s", active_tflite_path)
             return True
-        logger.error("Downloaded file is invalid or empty: %s", TFLITE_MODEL_PATH)
+        logger.error("Downloaded file is invalid or empty: %s", RUNTIME_TFLITE_MODEL_PATH)
         return False
     except Exception as exc:
         logger.error("Failed to download TFLite model: %s", exc)
@@ -138,14 +148,14 @@ def load_model_and_cache():
     tflite_available = ensure_tflite_model_exists()
     if tflite_available:
         try:
-            logger.info(f"Loading quantized TFLite model from {TFLITE_MODEL_PATH}...")
+            logger.info(f"Loading quantized TFLite model from {active_tflite_path}...")
             if TFLiteInterpreter is not None:
-                tflite_interpreter = TFLiteInterpreter(model_path=str(TFLITE_MODEL_PATH))
+                tflite_interpreter = TFLiteInterpreter(model_path=str(active_tflite_path))
             else:
                 tf_fallback = get_tf_module()
                 if tf_fallback is None:
                     raise RuntimeError(f"No TFLite interpreter available. TensorFlow error: {TF_IMPORT_ERROR}")
-                tflite_interpreter = tf_fallback.lite.Interpreter(model_path=str(TFLITE_MODEL_PATH))
+                tflite_interpreter = tf_fallback.lite.Interpreter(model_path=str(active_tflite_path))
             tflite_interpreter.allocate_tensors()
             use_tflite = True
             logger.info("✓ TFLite model loaded successfully (70-90% smaller, 2-3x faster)")
@@ -478,6 +488,8 @@ def health():
         "model_loaded": model is not None or tflite_interpreter is not None,
         "model_type": model_type,
         "tflite_file_exists": TFLITE_MODEL_PATH.exists(),
+        "active_tflite_path": str(active_tflite_path),
+        "runtime_tflite_file_exists": RUNTIME_TFLITE_MODEL_PATH.exists(),
         "tflite_download_url": TFLITE_DOWNLOAD_URL,
         "model_load_error": model_load_error,
         "dependencies_available": {
