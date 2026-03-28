@@ -158,13 +158,29 @@ def load_model_and_cache():
     if tflite_available:
         try:
             logger.info(f"Loading quantized TFLite model from {active_tflite_path}...")
+            interpreter_errors = []
+
             if TFLiteInterpreter is not None:
-                tflite_interpreter = TFLiteInterpreter(model_path=str(active_tflite_path))
-            else:
+                try:
+                    tflite_interpreter = TFLiteInterpreter(model_path=str(active_tflite_path))
+                except Exception as exc:
+                    interpreter_errors.append(f"tflite_runtime failed: {exc}")
+                    tflite_interpreter = None
+
+            if tflite_interpreter is None:
                 tf_fallback = get_tf_module()
-                if tf_fallback is None:
-                    raise RuntimeError(f"No TFLite interpreter available. TensorFlow error: {TF_IMPORT_ERROR}")
-                tflite_interpreter = tf_fallback.lite.Interpreter(model_path=str(active_tflite_path))
+                if tf_fallback is not None:
+                    try:
+                        tflite_interpreter = tf_fallback.lite.Interpreter(model_path=str(active_tflite_path))
+                    except Exception as exc:
+                        interpreter_errors.append(f"tf.lite failed: {exc}")
+                        tflite_interpreter = None
+                else:
+                    interpreter_errors.append(f"tensorflow import failed: {TF_IMPORT_ERROR}")
+
+            if tflite_interpreter is None:
+                raise RuntimeError("; ".join(interpreter_errors) or "No TFLite interpreter available")
+
             tflite_interpreter.allocate_tensors()
             use_tflite = True
             logger.info("✓ TFLite model loaded successfully (70-90% smaller, 2-3x faster)")
@@ -346,12 +362,16 @@ def run_prediction(input_batch):
 @app.route("/", methods=["GET"])
 def index():
     """Serve the main upload page."""
-    # Don't load model here, just check if dependencies exist
+    # Don't force-load model here, but reflect known runtime state
     model_ready = (
-        cv2 is not None
-        and np is not None
-        and len(class_labels) > 0
-        and (TFLITE_MODEL_PATH.exists() or MODEL_PATH.exists())
+        (model is not None or tflite_interpreter is not None)
+        or (
+            cv2 is not None
+            and np is not None
+            and len(class_labels) > 0
+            and (TFLITE_MODEL_PATH.exists() or MODEL_PATH.exists() or RUNTIME_TFLITE_MODEL_PATH.exists())
+            and model_load_error is None
+        )
     )
     error_msg = None
     
