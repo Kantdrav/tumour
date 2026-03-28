@@ -32,11 +32,20 @@ except Exception as exc:
 else:
     NUMPY_IMPORT_ERROR = ""
 
+TFLiteInterpreter = None
+TFLITE_INTERPRETER_SOURCE = "none"
 try:
     tflite_runtime_module = importlib.import_module("tflite_runtime.interpreter")
     TFLiteInterpreter = tflite_runtime_module.Interpreter
+    TFLITE_INTERPRETER_SOURCE = "tflite_runtime"
 except Exception:
-    TFLiteInterpreter = None
+    try:
+        litert_module = importlib.import_module("ai_edge_litert.interpreter")
+        TFLiteInterpreter = litert_module.Interpreter
+        TFLITE_INTERPRETER_SOURCE = "ai_edge_litert"
+    except Exception:
+        TFLiteInterpreter = None
+        TFLITE_INTERPRETER_SOURCE = "none"
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -167,8 +176,11 @@ def load_model_and_cache():
     
     if IS_RENDER:
         model_load_error = (
-            "Optimized TFLite model not available. "
-            f"Tried local path and download URL: {TFLITE_DOWNLOAD_URL}"
+            "Optimized TFLite model or interpreter not available. "
+            f"interpreter_source={TFLITE_INTERPRETER_SOURCE}, "
+            f"tflite_path_exists={TFLITE_MODEL_PATH.exists()}, "
+            f"runtime_tflite_exists={RUNTIME_TFLITE_MODEL_PATH.exists()}, "
+            f"download_url={TFLITE_DOWNLOAD_URL}"
         )
         logger.error(model_load_error)
         return False
@@ -490,6 +502,7 @@ def health():
         "tflite_file_exists": TFLITE_MODEL_PATH.exists(),
         "active_tflite_path": str(active_tflite_path),
         "runtime_tflite_file_exists": RUNTIME_TFLITE_MODEL_PATH.exists(),
+        "tflite_interpreter_source": TFLITE_INTERPRETER_SOURCE,
         "tflite_download_url": TFLITE_DOWNLOAD_URL,
         "model_load_error": model_load_error,
         "dependencies_available": {
