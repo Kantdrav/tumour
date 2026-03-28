@@ -2,6 +2,7 @@ import json
 import os
 import uuid
 import logging
+import importlib
 from pathlib import Path
 from typing import Any
 
@@ -31,13 +32,10 @@ else:
     NUMPY_IMPORT_ERROR = ""
 
 try:
-    import tensorflow as tf
-except Exception as exc:
-    tf = None
-    TF_IMPORT_ERROR = str(exc)
-    logger.error(f"TensorFlow import failed: {TF_IMPORT_ERROR}")
-else:
-    TF_IMPORT_ERROR = ""
+    tflite_runtime_module = importlib.import_module("tflite_runtime.interpreter")
+    TFLiteInterpreter = tflite_runtime_module.Interpreter
+except Exception:
+    TFLiteInterpreter = None
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -64,6 +62,23 @@ conv_model_cached = None
 classifier_model_cached = None
 model_load_error = None
 use_tflite = False  # Track if we're using TFLite or Keras
+tf_module = None
+TF_IMPORT_ERROR = ""
+
+
+def get_tf_module():
+    """Lazily import TensorFlow only if Keras fallback is needed."""
+    global tf_module, TF_IMPORT_ERROR
+    if tf_module is not None:
+        return tf_module
+
+    try:
+        tf_module = importlib.import_module("tensorflow")
+        return tf_module
+    except Exception as exc:
+        TF_IMPORT_ERROR = str(exc)
+        logger.error("TensorFlow lazy import failed: %s", TF_IMPORT_ERROR)
+        return None
 
 # Load class labels from JSON or filesystem
 if CLASS_MAP_PATH.exists():
@@ -86,16 +101,17 @@ def load_model_and_cache():
     if model_load_error is not None:
         return False  # Already tried and failed
     
-    if tf is None:
-        model_load_error = f"TensorFlow is not available: {TF_IMPORT_ERROR}"
-        logger.error(model_load_error)
-        return False
-    
     # Try TFLite first (70-90% smaller, 2-3x faster)
     if TFLITE_MODEL_PATH.exists():
         try:
             logger.info(f"Loading quantized TFLite model from {TFLITE_MODEL_PATH}...")
-            tflite_interpreter = tf.lite.Interpreter(model_path=str(TFLITE_MODEL_PATH))
+            if TFLiteInterpreter is not None:
+                tflite_interpreter = TFLiteInterpreter(model_path=str(TFLITE_MODEL_PATH))
+            else:
+                tf_fallback = get_tf_module()
+                if tf_fallback is None:
+                    raise RuntimeError(f"No TFLite interpreter available. TensorFlow error: {TF_IMPORT_ERROR}")
+                tflite_interpreter = tf_fallback.lite.Interpreter(model_path=str(TFLITE_MODEL_PATH))
             tflite_interpreter.allocate_tensors()
             use_tflite = True
             logger.info("✓ TFLite model loaded successfully (70-90% smaller, 2-3x faster)")
@@ -110,10 +126,16 @@ def load_model_and_cache():
         model_load_error = f"Model file not found at {MODEL_PATH}"
         logger.error(model_load_error)
         return False
+
+    tf_keras = get_tf_module()
+    if tf_keras is None:
+        model_load_error = f"TensorFlow is not available for Keras fallback: {TF_IMPORT_ERROR}"
+        logger.error(model_load_error)
+        return False
     
     try:
         logger.info(f"Loading Keras model from {MODEL_PATH}...")
-        model = tf.keras.models.load_model(MODEL_PATH)
+        model = tf_keras.keras.models.load_model(MODEL_PATH)
         use_tflite = False
         logger.info("✓ Keras model loaded successfully")
         
@@ -121,12 +143,12 @@ def load_model_and_cache():
         try:
             logger.info("Building Grad-CAM models...")
             backbone = model.get_layer("efficientnetb0")
-            conv_model_cached = tf.keras.models.Model(backbone.input, backbone.output)
-            classifier_input = tf.keras.Input(shape=backbone.output.shape[1:])
+            conv_model_cached = tf_keras.keras.models.Model(backbone.input, backbone.output)
+            classifier_input = tf_keras.keras.Input(shape=backbone.output.shape[1:])
             x = classifier_input
             for layer in model.layers[2:]:
                 x = layer(x)
-            classifier_model_cached = tf.keras.models.Model(classifier_input, x)
+            classifier_model_cached = tf_keras.keras.models.Model(classifier_input, x)
             logger.info("✓ Grad-CAM models built successfully")
         except Exception as e:
             logger.warning(f"Grad-CAM models failed to build: {e}")
@@ -170,27 +192,32 @@ def make_gradcam_overlay(
     pred_idx: int,
 ) -> bool:
     """Generate Grad-CAM visualization overlay."""
+    tf_for_gradcam = get_tf_module()
+    if tf_for_gradcam is None:
+        logger.warning("Grad-CAM skipped because TensorFlow is unavailable")
+        return False
+
     # Use cached models instead of rebuilding
     if conv_model_cached is None or classifier_model_cached is None:
         logger.warning("Grad-CAM models not available")
         return False
 
     try:
-        with tf.GradientTape() as tape:
+        with tf_for_gradcam.GradientTape() as tape:
             conv_outputs = conv_model_cached(input_batch)
             tape.watch(conv_outputs)
             predictions = classifier_model_cached(conv_outputs)
             loss_value = predictions[:, pred_idx]
 
         grads = tape.gradient(loss_value, conv_outputs)
-        pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+        pooled_grads = tf_for_gradcam.reduce_mean(grads, axis=(0, 1, 2))
 
         conv_outputs = conv_outputs[0]
-        heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
-        heatmap = tf.squeeze(heatmap)
+        heatmap = conv_outputs @ pooled_grads[..., None]
+        heatmap = tf_for_gradcam.squeeze(heatmap)
 
-        heatmap = tf.maximum(heatmap, 0)
-        heatmap /= tf.reduce_max(heatmap) + tf.keras.backend.epsilon()
+        heatmap = tf_for_gradcam.maximum(heatmap, 0)
+        heatmap /= tf_for_gradcam.reduce_max(heatmap) + tf_for_gradcam.keras.backend.epsilon()
         heatmap_np = heatmap.numpy()
 
         original_bgr = cv2.imread(str(image_path))
@@ -256,27 +283,39 @@ def run_prediction(input_batch):
 def index():
     """Serve the main upload page."""
     # Don't load model here, just check if dependencies exist
-    model_ready = tf is not None and cv2 is not None and np is not None and len(class_labels) > 0
+    model_ready = (
+        cv2 is not None
+        and np is not None
+        and len(class_labels) > 0
+        and (TFLITE_MODEL_PATH.exists() or MODEL_PATH.exists())
+    )
     error_msg = None
     
     if not model_ready:
-        if tf is None:
-            error_msg = f"TensorFlow not available: {TF_IMPORT_ERROR}"
-        elif cv2 is None:
+        if cv2 is None:
             error_msg = f"OpenCV not available: {CV2_IMPORT_ERROR}"
         elif np is None:
             error_msg = f"NumPy not available: {NUMPY_IMPORT_ERROR}"
         elif len(class_labels) == 0:
             error_msg = "No classes found. Train the model first with: python train_model.py"
+        elif not (TFLITE_MODEL_PATH.exists() or MODEL_PATH.exists()):
+            error_msg = "No model found. Train first using: python train_model.py"
         
         logger.warning(f"Index page accessed with error: {error_msg}")
     
     return render_template("index.html", model_ready=model_ready, error=error_msg)
 
 
-@app.route("/predict", methods=["POST"])
+@app.route("/predict", methods=["GET", "POST"])
 def predict():
     """Handle image prediction requests."""
+    if request.method == "GET":
+        return render_template(
+            "index.html",
+            error="Use the upload form on the home page to submit an image.",
+            model_ready=True,
+        )
+
     logger.info("Prediction request received")
     
     # Check dependencies
@@ -285,8 +324,6 @@ def predict():
         errors.append(f"NumPy missing: {NUMPY_IMPORT_ERROR}")
     if cv2 is None:
         errors.append(f"OpenCV missing: {CV2_IMPORT_ERROR}")
-    if tf is None:
-        errors.append(f"TensorFlow missing: {TF_IMPORT_ERROR}")
     
     if errors:
         error_msg = " | ".join(errors)
@@ -400,7 +437,8 @@ def health():
         "model_type": model_type,
         "model_load_error": model_load_error,
         "dependencies_available": {
-            "tensorflow": tf is not None,
+            "tensorflow_loaded": tf_module is not None,
+            "tflite_runtime": TFLiteInterpreter is not None,
             "opencv": cv2 is not None,
             "numpy": np is not None,
         },
@@ -416,7 +454,12 @@ if __name__ == "__main__":
     logger.info("=" * 60)
     logger.info("Starting Brain Tumor Detection Application")
     logger.info(f"Port: {port}, Debug: {debug}")
-    logger.info(f"Dependencies available - TF: {tf is not None}, OpenCV: {cv2 is not None}, NumPy: {np is not None}")
+    logger.info(
+        "Dependencies available - TFLite runtime: %s, OpenCV: %s, NumPy: %s",
+        TFLiteInterpreter is not None,
+        cv2 is not None,
+        np is not None,
+    )
     logger.info(f"Keras model path: {MODEL_PATH} (exists: {MODEL_PATH.exists()})")
     logger.info(f"TFLite model path: {TFLITE_MODEL_PATH} (exists: {TFLITE_MODEL_PATH.exists()})")
     logger.info(f"Classes loaded: {len(class_labels)} ({', '.join(class_labels)})")

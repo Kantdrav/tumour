@@ -1,9 +1,7 @@
 flask>=3.0.0
 tensorflow>=2.14.0
+tflite-runtime>=2.14.0
 numpy>=1.24.0
-matplotlib>=3.8.0
 opencv-python>=4.8.0
-seaborn>=0.13.0
-scikit-learn>=1.3.0
 pillow>=10.0.0
 gunicorn>=21.2.0
