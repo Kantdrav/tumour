@@ -3,6 +3,7 @@ import os
 import uuid
 import logging
 import importlib
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,14 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 IMG_SIZE = 224
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
 IS_RENDER = bool(os.environ.get("RENDER") or os.environ.get("RENDER_EXTERNAL_HOSTNAME"))
+REPO_OWNER = os.environ.get("GITHUB_REPO_OWNER", "Kantdrav")
+REPO_NAME = os.environ.get("GITHUB_REPO_NAME", "tumour")
+REPO_BRANCH = os.environ.get("GITHUB_REPO_BRANCH", "main")
+DEFAULT_TFLITE_URL = (
+    f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/{REPO_BRANCH}"
+    "/models/brain_tumor_efficientnetb0_quantized.tflite"
+)
+TFLITE_DOWNLOAD_URL = os.environ.get("TFLITE_MODEL_URL", DEFAULT_TFLITE_URL)
 
 app = Flask(__name__, template_folder="app/templates", static_folder="app/static")
 app.logger.setLevel(logging.INFO)
@@ -81,6 +90,29 @@ def get_tf_module():
         logger.error("TensorFlow lazy import failed: %s", TF_IMPORT_ERROR)
         return None
 
+
+def ensure_tflite_model_exists() -> bool:
+    """Ensure quantized model exists; auto-download on Render if missing."""
+    if TFLITE_MODEL_PATH.exists():
+        return True
+
+    if not IS_RENDER:
+        return False
+
+    try:
+        logger.warning("TFLite model missing. Attempting download from %s", TFLITE_DOWNLOAD_URL)
+        TFLITE_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(TFLITE_DOWNLOAD_URL, str(TFLITE_MODEL_PATH))
+        exists_now = TFLITE_MODEL_PATH.exists() and TFLITE_MODEL_PATH.stat().st_size > 0
+        if exists_now:
+            logger.info("Downloaded TFLite model to %s", TFLITE_MODEL_PATH)
+            return True
+        logger.error("Downloaded file is invalid or empty: %s", TFLITE_MODEL_PATH)
+        return False
+    except Exception as exc:
+        logger.error("Failed to download TFLite model: %s", exc)
+        return False
+
 # Load class labels from JSON or filesystem
 if CLASS_MAP_PATH.exists():
     with open(CLASS_MAP_PATH, "r", encoding="utf-8") as handle:
@@ -103,7 +135,8 @@ def load_model_and_cache():
         return False  # Already tried and failed
     
     # Try TFLite first (70-90% smaller, 2-3x faster)
-    if TFLITE_MODEL_PATH.exists():
+    tflite_available = ensure_tflite_model_exists()
+    if tflite_available:
         try:
             logger.info(f"Loading quantized TFLite model from {TFLITE_MODEL_PATH}...")
             if TFLiteInterpreter is not None:
@@ -124,8 +157,8 @@ def load_model_and_cache():
     
     if IS_RENDER:
         model_load_error = (
-            "Optimized TFLite model not found on server. "
-            "Please deploy models/brain_tumor_efficientnetb0_quantized.tflite"
+            "Optimized TFLite model not available. "
+            f"Tried local path and download URL: {TFLITE_DOWNLOAD_URL}"
         )
         logger.error(model_load_error)
         return False
@@ -444,6 +477,8 @@ def health():
         "status": "ok",
         "model_loaded": model is not None or tflite_interpreter is not None,
         "model_type": model_type,
+        "tflite_file_exists": TFLITE_MODEL_PATH.exists(),
+        "tflite_download_url": TFLITE_DOWNLOAD_URL,
         "model_load_error": model_load_error,
         "dependencies_available": {
             "tensorflow_loaded": tf_module is not None,
